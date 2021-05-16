@@ -1,0 +1,149 @@
+---
+- hosts: local
+  become: no
+  gather_facts: False
+  vars:
+    - vmware_hostname: 100.110.65.97
+    - vmware_username: root
+    - vmware_password: C1sc0123
+    - vmware_network: VM_Network
+    - csv_inventory_file: "{{ playbook_dir }}/gns3_pods.csv"
+      # Get new version URLs from the GNS3 Server Download page: https://www.gns3.com/software/download-vm
+    - gns3_server_ova_url: "https://github.com/GNS3/gns3-gui/releases/download/v2.2.15/GNS3.VM.VMware.ESXI.2.2.15.zip"
+    - gns3_ova_file: "{{ playbook_dir }}/OVAs/GNS3\ VM.ova"
+    - vm_username: gns3
+    - vm_password: gns3
+  tasks:
+    - name: Read CSV File
+      read_csv:
+        path: "{{ csv_inventory_file }}"
+      register: gns3_vms
+    - name: Check for GNS3 OVA File
+      shell: "ls '{{ playbook_dir }}/OVAs/GNS3 VM.ova'"
+      register: ova_check
+      ignore_errors: True
+    - debug:
+        msg: "{{ ova_check }}"
+    - name: Download and extract the GNS3 Server OVA
+      unarchive:
+        src: "{{ gns3_server_ova_url }}"
+        dest: "{{ playbook_dir }}/OVAs"
+        remote_src: yes
+      when: ova_check.rc != 0
+    - name: Deploy gns3 virtual server OVA
+      vmware_deploy_ovf:
+        hostname: "{{ vmware_hostname }}"
+        username: "{{ vmware_username }}"
+        password: "{{ vmware_password }}"
+        validate_certs: no
+        name: "{{ item.hostname }}"
+        disk_provisioning: thin
+        networks: 
+          "Network 1": "{{ vmware_network }}"
+        ovf: "{{ gns3_ova_file }}"
+        properties:
+          vami.hostname: "{{ item.hostname }}.{{ item.domain }}"
+          vami.ip0.IdentityManager: "{{ item.ip }}"
+          vami.netmask0.IdentityManager: "{{ item.netmask }}"
+          vami.gateway.IdentityManager: "{{ item.gateway }}"
+          vami.DNS.IdentityManager: "8.8.8.8"
+          vami.domain.IdentityManager: "{{ item.domain }}"
+          vami.searchpath.IdentityManager: "{{ item.domain }}"
+          ceip.enabled: yes
+          vamitimezone: "America/Chicago"
+      delegate_to: localhost
+      loop: "{{ gns3_vms.list }}"
+ 
+    - name: Pause for 2 minutes to allow VMs to boot
+      pause:
+        minutes: 2
+ 
+    - name: Assign IP Addresses to the VMs with ifconfig
+      community.vmware.vmware_vm_shell:
+        hostname: "{{ vmware_hostname }}"
+        username: "{{ vmware_username }}"
+        password: "{{ vmware_password }}"
+        validate_certs: no
+        #folder: "/{{datacenter}}/vm"
+        vm_id: "{{ item.hostname }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        vm_shell: /usr/bin/sudo
+        vm_shell_args: "ifconfig eth0 {{ item.ip }}  netmask {{ item.netmask }} up"
+        vm_shell_env:
+          "PATH=/bin:/sbin/"
+        #vm_shell_cwd: "/tmp"
+      delegate_to: localhost
+      register: shell_command_output
+      loop: "{{ gns3_vms.list }}"
+
+    - name: Assign a default gateway to the VMs
+      community.vmware.vmware_vm_shell:
+        hostname: "{{ vmware_hostname }}"
+        username: "{{ vmware_username }}"
+        password: "{{ vmware_password }}"
+        validate_certs: no
+        #folder: "/{{datacenter}}/vm"
+        vm_id: "{{ item.hostname }}"
+        vm_username: "{{ vm_username }}"
+        vm_password: "{{ vm_password }}"
+        vm_shell: /usr/bin/sudo
+        vm_shell_args: "route add default gw {{ item.gateway }}"
+        vm_shell_env:
+          "PATH=/bin:/sbin/"
+        #vm_shell_cwd: "/tmp"
+      delegate_to: localhost
+      register: shell_command_output
+      loop: "{{ gns3_vms.list }}"
+
+    - name: Add hosts to dynamic inventory
+      add_host:
+          name: "{{ item.hostname }}"
+          ansible_host: "{{ item.ip }}"
+          groups: gns3
+          ansible_user: "{{ vm_username }}"
+          ansible_password: "{{ vm_password }}"
+          ansible_become: True
+          gns3_user: "{{ item.user }}"
+          gns3_password: "{{ item.password }}"
+          gateway: "{{ item.gateway }}"
+          cidr: "{{ item.cidr }}"
+      loop: "{{ gns3_vms.list }}"
+
+
+- hosts: gns3
+  become: yes
+  gather_facts: False
+  vars:
+  tasks:
+    - name: Write Static IP to VM Hosts
+      template:
+        src: ./templates/network.j2
+        dest: /etc/netplan/90_gns3vm_static_netcfg.yaml
+
+    - name: Configure DNS Servers
+      shell:
+        cmd: "echo nameserver 8.8.8.8 >> /etc/resolv.conf"
+
+    - name: Get GNS3 release channel
+      shell:
+        cmd: "cat /home/gns3/.config/GNS3/gns3_release_channel"
+      register: GNS3_RELEASE_CHANNEL
+
+    - debug:
+        msg: " {{ GNS3_RELEASE_CHANNEL.stdout }}"
+
+    - name: Enable GNS3 Authentication
+      lineinfile:
+        path: "/home/gns3/.config/GNS3/{{ GNS3_RELEASE_CHANNEL.stdout }}/gns3_server.conf"
+        state: present
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^auth.*', line: 'auth = True' }
+        - { regexp: '^user.*', line: 'user = {{ gns3_user }}' }
+        - { regexp: '^password.*', line: 'password = {{ gns3_password }}' }
+      
+
+    - name: Reboot GNS3 VM
+      reboot:

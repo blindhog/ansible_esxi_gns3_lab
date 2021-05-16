@@ -1,0 +1,13 @@
+[local]
+#localhost   ansible_python_interpreter=~/python-env/ansible_vmware/bin/python
+localhost
+
+[gns3]
+{% for item in gns3_vms.list %}
+{{ item.hostname }}    ansible_host={{ item.ip }}
+{% endfor %}
+
+[gns3:vars]
+ansible_user=gns3
+ansible_password=gns3
+ansible_become=gns3

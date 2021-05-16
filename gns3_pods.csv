@@ -1,0 +1,3 @@
+hostname,domain,user,password,ip,netmask,cidr,gateway
+gns3_lab2,scooby.local,ulab2,plab2,100.110.65.102,255.255.255.0,24,100.110.65.254
+gns3_lab3,scooby.local,ulab3,plab3,100.110.65.103,255.255.255.0,24,100.110.65.254

@@ -1,0 +1,40 @@
+---
+- hosts: local
+  become: no
+  gather_facts: False
+  vars:
+  tasks:
+  - name: Read CSV File
+    read_csv:
+      path: /home/admin/Documents/Ansible-VMware/gns3_pods.csv
+    register: gns3_vms
+
+
+  - name: Add hosts to dynamic inventory
+    add_host:
+        name: "{{ item.hostname }}"
+        ansible_host: "{{ item.ip }}"
+        groups: gns3
+        ansible_user: "gns3"
+        ansible_password: "gns3"
+        ansible_become: True
+        ansible_become_password: "gns3"
+        gateway: "{{ item.gateway }}"
+        cidr: "{{ item.cidr }}"
+    loop: "{{ gns3_vms.list }}"
+
+
+- hosts: gns3
+  become: yes
+  gather_facts: False
+  vars:
+  tasks:
+  - name: Upgraade GNS3 (gns3restore)
+    shell:
+      cmd: "/usr/local/bin/gns3restore"
+    register: upgrade_output
+    async: 300
+    poll: 10
+
+  - debug:
+      msg: "{{ upgrade_output }}"
